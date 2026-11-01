@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { analyzeHolding } from './engine/analyze';
-import { type Card, cardText, sameCard, startingHandName } from './engine/cards';
+import { type Rank, type Suit, startingHandName } from './engine/cards';
 import {
   type Position,
   POSITIONS,
@@ -28,7 +28,26 @@ import {
 } from './engine/hand';
 import { chipsAndBb, formatChips, formatSpr, percent, roundMoney, roundToChips } from './engine/pot';
 import { recommend } from './engine/recommend';
-import { CardPicker, EmptySlot, PlayingCard } from './ui/Cards';
+import { CardSlot, RankSuitPicker } from './ui/Cards';
+import {
+  type PickerSession,
+  type SlotCards,
+  type SlotId,
+  BOARD_SLOTS,
+  HOLE_SLOTS,
+  back as backPicker,
+  emptySlotLabel,
+  emptySlots,
+  firstEmptyBoardSlot,
+  isSlotAllowed,
+  openPicker,
+  pickRank,
+  pickSuit,
+  projectCards,
+  slotLockReason,
+  slotsAfterUndo,
+  takenCards,
+} from './ui/cardPicker';
 
 const STREETS: Street[] = ['preflop', 'flop', 'turn', 'river'];
 
@@ -39,21 +58,20 @@ export function App() {
   const [stackText, setStackText] = useState('100');
   const [amount, setAmount] = useState('');
   const [error, setError] = useState<string | null>(null);
-  const [picking, setPicking] = useState<'hole' | 'board'>('hole');
+  const [slots, setSlots] = useState<SlotCards>(() => emptySlots());
+  const [picker, setPicker] = useState<PickerSession | null>(null);
 
   const derived = useMemo(() => derive(state), [state]);
   const advice = useMemo(() => recommend(state), [state]);
   const pristine = isPristine(state);
   const boardLimit = boardCardsFor(state.street);
   const visibleBoard = state.board.slice(0, boardLimit);
+  const holeA = slots['hole-0'];
+  const holeB = slots['hole-1'];
   const read =
     state.hole.length === 2 && visibleBoard.length >= 3
       ? analyzeHolding([state.hole[0], state.hole[1]], visibleBoard)
       : null;
-
-  useEffect(() => {
-    if (state.street !== 'preflop' && state.board.length < boardCardsFor(state.street)) setPicking('board');
-  }, [state.street, state.board.length]);
 
   function replace(next: HandState) {
     setState(next);
@@ -86,22 +104,51 @@ export function App() {
     setState(createHand(config));
   }
 
-  function toggleCard(card: Card) {
-    if (picking === 'hole' || state.street === 'preflop') {
-      const exists = state.hole.some((other) => sameCard(other, card));
-      const next = exists ? state.hole.filter((other) => !sameCard(other, card)) : [...state.hole, card];
-      if (!exists && (state.hole.length >= 2 || state.board.some((other) => sameCard(other, card)))) return;
-      const result = setHole(state, next);
-      if (!result.ok) setError(result.error);
-      else replace(result.state);
-      return;
+  function commitSlots(nextSlots: SlotCards): boolean {
+    const projected = projectCards(nextSlots, state.street);
+    const holeResult = setHole(state, projected.hole);
+    if (!holeResult.ok) {
+      setError(holeResult.error);
+      return false;
     }
-    const exists = state.board.some((other) => sameCard(other, card));
-    const next = exists ? state.board.filter((other) => !sameCard(other, card)) : [...state.board, card];
-    if (!exists && (state.board.length >= boardLimit || state.hole.some((other) => sameCard(other, card)))) return;
-    const result = setBoard(state, next);
-    if (!result.ok) setError(result.error);
-    else replace(result.state);
+    const boardResult = setBoard(holeResult.state, projected.board);
+    if (!boardResult.ok) {
+      setError(boardResult.error);
+      return false;
+    }
+    replace(boardResult.state);
+    setSlots(nextSlots);
+    return true;
+  }
+
+  function openSlot(slot: SlotId) {
+    if (!isSlotAllowed(state.street, slot)) return;
+    setPicker(openPicker(slot));
+  }
+
+  function chooseRank(rank: Rank) {
+    if (!picker) return;
+    const next = pickRank(picker, rank, slots);
+    if (next) setPicker(next);
+  }
+
+  function chooseSuit(suit: Suit) {
+    if (!picker) return;
+    const placed = pickSuit(picker, suit, slots, state.street);
+    if (!placed || !commitSlots(placed.slots)) return;
+    setPicker(placed.session);
+  }
+
+  function goBack() {
+    if (!picker) return;
+    setPicker(backPicker(picker, state.street));
+  }
+
+  function clearPickedSlot() {
+    if (!picker) return;
+    const nextSlots: SlotCards = { ...slots, [picker.slot]: null };
+    if (!commitSlots(nextSlots)) return;
+    setPicker({ ...picker, step: 'rank', rank: null });
   }
 
   function playAdvice() {
@@ -177,7 +224,8 @@ export function App() {
           className="ghost"
           onClick={() => {
             replace(newHand(state));
-            setPicking('hole');
+            setSlots(emptySlots());
+            setPicker(null);
             setAmount('');
           }}
         >
@@ -259,23 +307,21 @@ export function App() {
           <section className="panel">
             <div className="panel-head">
               <h2>Your hand</h2>
-              <p>{state.hole.length === 2 ? startingHandName(state.hole[0], state.hole[1]) : 'Choose two hole cards'}</p>
+              <p>
+                {holeA && holeB ? startingHandName(holeA, holeB) : 'Click a slot to choose two cards'}
+              </p>
             </div>
             <div className="held">
-              {state.hole.map((card) => (
-                <PlayingCard
-                  key={cardText(card)}
-                  card={card}
-                  size="lg"
-                  onClick={() => {
-                    const result = setHole(state, state.hole.filter((other) => !sameCard(other, card)));
-                    if (!result.ok) setError(result.error);
-                    else replace(result.state);
-                  }}
+              {HOLE_SLOTS.map((slot) => (
+                <CardSlot
+                  key={slot}
+                  slot={slot}
+                  label={emptySlotLabel(slot)}
+                  card={slots[slot]}
+                  active={picker?.slot === slot}
+                  onClick={() => openSlot(slot)}
                 />
               ))}
-              {state.hole.length < 2 && <EmptySlot label="Hole" />}
-              {state.hole.length < 1 && <EmptySlot label="Card" />}
             </div>
             {read && (
               <p className="made">
@@ -292,50 +338,32 @@ export function App() {
               <p>{visibleBoard.length === 0 ? 'No community cards yet' : advice.texture ?? 'Community cards'}</p>
             </div>
             <div className="held board-row">
-              {Array.from({ length: 5 }, (_, index) => {
-                const card = state.board[index];
-                const open = index < boardLimit;
-                if (!card || !open) return <EmptySlot key={index} label={index < 3 ? 'Flop' : index === 3 ? 'Turn' : 'River'} />;
-                return (
-                  <PlayingCard
-                    key={cardText(card)}
-                    card={card}
-                    size="lg"
-                    onClick={() => {
-                      const result = setBoard(state, state.board.filter((other) => !sameCard(other, card)));
-                      if (!result.ok) setError(result.error);
-                      else replace(result.state);
-                    }}
-                  />
-                );
-              })}
+              {BOARD_SLOTS.map((slot) => (
+                <CardSlot
+                  key={slot}
+                  slot={slot}
+                  label={emptySlotLabel(slot)}
+                  card={slots[slot]}
+                  active={picker?.slot === slot}
+                  disabled={!isSlotAllowed(state.street, slot)}
+                  lockReason={slotLockReason(state.street, slot)}
+                  onClick={() => openSlot(slot)}
+                />
+              ))}
             </div>
           </section>
 
-          <section className="panel">
-            <div className="panel-head">
-              <h2>Cards</h2>
-              <div className="switch">
-                <button type="button" className={picking === 'hole' ? 'on' : ''} onClick={() => setPicking('hole')}>
-                  Hole cards
-                </button>
-                <button
-                  type="button"
-                  className={picking === 'board' ? 'on' : ''}
-                  disabled={boardLimit === 0}
-                  onClick={() => setPicking('board')}
-                >
-                  Board
-                </button>
-              </div>
-            </div>
-            <CardPicker
-              selected={picking === 'board' ? visibleBoard : state.hole}
-              blocked={picking === 'board' ? state.hole : state.board}
-              disabled={picking === 'board' && boardLimit === 0}
-              onToggle={toggleCard}
+          {picker && (
+            <RankSuitPicker
+              session={picker}
+              taken={takenCards(slots, picker.slot)}
+              current={slots[picker.slot]}
+              onRank={chooseRank}
+              onSuit={chooseSuit}
+              onBack={goBack}
+              onClear={clearPickedSlot}
             />
-          </section>
+          )}
 
           <section className="panel">
             <div className="panel-head">
@@ -374,7 +402,16 @@ export function App() {
                   Folds to you
                 </button>
               )}
-              <button type="button" className="quiet" onClick={() => replace(undo(state))}>
+              <button
+                type="button"
+                className="quiet"
+                onClick={() => {
+                  const next = undo(state);
+                  setSlots((current) => slotsAfterUndo(state, next, current));
+                  setPicker(null);
+                  replace(next);
+                }}
+              >
                 Undo
               </button>
               {canAdvance && (
@@ -386,7 +423,8 @@ export function App() {
                     if (!result.ok) setError(result.error);
                     else {
                       replace(result.state);
-                      setPicking('board');
+                      const nextSlot = firstEmptyBoardSlot(result.state.street, slots);
+                      setPicker(nextSlot ? openPicker(nextSlot) : null);
                     }
                   }}
                 >
