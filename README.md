@@ -23,9 +23,9 @@ No server and no account are required. Everything runs in the browser.
 ## How a hand works
 
 1. Set the small blind, big blind, effective stack (default 100bb), and your seat: UTG, UTG+1, UTG+2, LJ, HJ, CO, BTN, SB, or BB.
-2. Pick two hole cards from the grid. The app recommends a preflop action from a full-ring chart, using the action already in front of you (unopened, limped, facing an open, facing a 3-bet, and so on).
+2. Click a hole-card slot. Choose a rank from 2 through ace, then a suit. The picker moves to the next empty slot. Cards already in use are marked and cannot be picked again. The app recommends a preflop action from a full-ring chart, using the action already in front of you (unopened, limped, facing an open, facing a 3-bet, and so on).
 3. Enter every fold, check, call, bet, and raise in order. Use **Folds to you** when the table folds around. **Play this** applies the recommendation for your seat.
-4. When the betting round is closed, deal the flop, turn, and river and click the board cards in. You get a new recommendation on each street, with a one- or two-line reason.
+4. When the betting round is closed, deal the flop, turn, and river. Board slots open on the street they belong to, and the picker walks the empty ones. Click a filled slot to change that card. You get a new recommendation on each street, with a one- or two-line reason.
 5. **New hand** clears the cards and history and deals the blinds again. **Undo** takes back the last action. The hand history on the left is only the current hand.
 
 ## How recommendations are made
