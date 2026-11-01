@@ -2,11 +2,13 @@ import { type Card, cardText, sameCard } from './cards';
 import {
   type Position,
   type Street,
-  POSITIONS,
-  POSTFLOP_ORDER,
-  PREFLOP_ORDER,
   boardCardsFor,
+  closestSeat,
+  nextHeroSeat,
   nextStreet,
+  postflopOrder,
+  seatsFor,
+  smallBlindSeat,
 } from './constants';
 import { EPS, potOdds, roundMoney, spr } from './pot';
 
@@ -27,6 +29,8 @@ export interface TableConfig {
   bb: number;
   stackBb: number;
   hero: Position;
+  /** Seated players, 2 through 9. Defaults to a full ring. */
+  players?: number;
 }
 
 export interface HandState {
@@ -35,6 +39,8 @@ export interface HandState {
   stackBb: number;
   stack: number;
   hero: Position;
+  /** Seats in preflop action order. Absent names are not in the hand. */
+  seats: readonly Position[];
   hole: Card[];
   board: Card[];
   street: Street;
@@ -89,21 +95,28 @@ export function validateConfig(config: Pick<TableConfig, 'sb' | 'bb' | 'stackBb'
 export function createHand(config: TableConfig): HandState {
   const problem = validateConfig(config);
   if (problem) throw new Error(problem);
+  const players = config.players ?? 9;
+  const seats = seatsFor(players);
+  if (!seats.includes(config.hero)) {
+    throw new Error(`${config.hero} is not seated at a ${players}-handed table.`);
+  }
   const sb = roundMoney(config.sb);
   const bb = roundMoney(config.bb);
   const stackBb = roundMoney(config.stackBb);
   const stack = roundMoney(stackBb * bb);
+  const sbSeat = smallBlindSeat(seats);
   return {
     sb,
     bb,
     stackBb,
     stack,
     hero: config.hero,
+    seats,
     hole: [],
     board: [],
     street: 'preflop',
     actions: [
-      { street: 'preflop', position: 'SB', kind: 'post', added: Math.min(sb, stack), commitAfter: Math.min(sb, stack) },
+      { street: 'preflop', position: sbSeat, kind: 'post', added: Math.min(sb, stack), commitAfter: Math.min(sb, stack) },
       { street: 'preflop', position: 'BB', kind: 'post', added: Math.min(bb, stack), commitAfter: Math.min(bb, stack) },
     ],
   };
@@ -118,8 +131,13 @@ export function isPristine(state: HandState): boolean {
   );
 }
 
-export function newHand(state: HandState): HandState {
-  return createHand({ sb: state.sb, bb: state.bb, stackBb: state.stackBb, hero: state.hero });
+/** Next deal. The hero moves one seat unless a seat or table size is chosen instead. */
+export function newHand(state: HandState, override: { hero?: Position; players?: number } = {}): HandState {
+  const players = override.players ?? state.seats.length;
+  const seats = seatsFor(players);
+  const chosen = override.hero ?? nextHeroSeat(state.seats, state.hero);
+  const hero = seats.includes(chosen) ? chosen : closestSeat(state.seats, chosen, seats);
+  return createHand({ sb: state.sb, bb: state.bb, stackBb: state.stackBb, hero, players });
 }
 
 export function updateConfig(state: HandState, config: TableConfig): HandState {
@@ -179,10 +197,10 @@ export function derive(state: HandState): Derived {
     voluntary.push(action);
   }
 
-  const allIn = POSITIONS.filter((position) => totalCommit[position] >= state.stack - EPS);
-  const active = POSITIONS.filter((position) => !folded.has(position));
+  const allIn = state.seats.filter((position) => totalCommit[position] >= state.stack - EPS);
+  const active = state.seats.filter((position) => !folded.has(position));
   const winner = active.length === 1 ? active[0] : null;
-  const toAct = winner ? null : findToAct(state.street, folded, new Set(allIn), streetCommit, voluntary, currentBet);
+  const toAct = winner ? null : findToAct(state, folded, new Set(allIn), streetCommit, voluntary, currentBet);
 
   const heroTotal = totalCommit[state.hero];
   const heroStreetCommit = streetCommit[state.hero];
@@ -190,7 +208,7 @@ export function derive(state: HandState): Derived {
   const maxHeroStreetCommit = roundMoney(heroStreetCommit + heroRemaining);
   const rawToCall = Math.max(0, currentBet - heroStreetCommit);
   const toCall = roundMoney(Math.min(rawToCall, heroRemaining));
-  const pot = roundMoney(POSITIONS.reduce((sum, position) => sum + totalCommit[position], 0));
+  const pot = roundMoney(state.seats.reduce((sum, position) => sum + totalCommit[position], 0));
   const minRaiseTo = roundMoney(currentBet <= EPS ? state.bb : currentBet + Math.max(lastFullRaise, state.bb));
 
   return {
@@ -205,7 +223,7 @@ export function derive(state: HandState): Derived {
     maxHeroStreetCommit,
     spr: spr(heroRemaining, pot),
     potOdds: potOdds(pot, toCall),
-    folded: POSITIONS.filter((position) => folded.has(position)),
+    folded: state.seats.filter((position) => folded.has(position)),
     allIn,
     toAct,
     winner,
@@ -220,14 +238,14 @@ function emptyAmounts(): Record<Position, number> {
 }
 
 function findToAct(
-  street: Street,
+  state: HandState,
   folded: Set<Position>,
   allIn: Set<Position>,
   streetCommit: Record<Position, number>,
   voluntary: ActionRecord[],
   currentBet: number,
 ): Position | null {
-  const order = street === 'preflop' ? PREFLOP_ORDER : POSTFLOP_ORDER;
+  const order = state.street === 'preflop' ? state.seats : postflopOrder(state.seats);
   const active = order.filter((position) => !folded.has(position));
   if (active.length < 2) return null;
   const living = (position: Position) => !allIn.has(position);
@@ -325,7 +343,7 @@ function push(state: HandState, action: ActionRecord): HandState {
 
 export function foldToHero(state: HandState): HandState {
   let current = state;
-  for (let i = 0; i < 10; i++) {
+  for (let i = 0; i < state.seats.length; i++) {
     const derived = derive(current);
     if (!derived.toAct || derived.toAct === current.hero) return current;
     const result = applyAction(current, { position: derived.toAct, kind: 'fold' });

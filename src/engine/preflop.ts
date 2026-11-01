@@ -1,5 +1,5 @@
 import { type Card, handKey, startingHandName } from './cards';
-import type { Position } from './constants';
+import { chartPosition, type Position } from './constants';
 import type { ActionRecord, HandState } from './hand';
 import { derive } from './hand';
 import { chipsAndBb, roundMoney } from './pot';
@@ -65,8 +65,9 @@ export function advisePreflop(state: HandState, hole: [Card, Card]): PreflopAdvi
 }
 
 function openAdvice(state: HandState, key: string, name: string, maxTo: number): PreflopAdvice {
-  const chart = OPEN_RANGE[state.hero];
-  const source = `RFI chart · ${state.hero} · 100bb full ring`;
+  const chartSeat = heroChart(state);
+  const chart = OPEN_RANGE[chartSeat];
+  const source = `RFI chart · ${seatPhrase(state)} · 100bb full ring`;
   if (!chart || !inRange(key, chart)) {
     if (state.hero === 'BB') {
       return {
@@ -81,23 +82,23 @@ function openAdvice(state: HandState, key: string, name: string, maxTo: number):
       action: 'fold',
       chips: null,
       headline: 'Fold',
-      explanation: `${name} is outside the ${state.hero} opening range in this 100bb full-ring chart. Fold.`,
+      explanation: `${name} is outside the ${seatPhrase(state)} opening range in this 100bb full-ring chart. Fold.`,
       source,
     };
   }
-  const desired = roundMoney(OPEN_SIZE_BB[state.hero] * state.bb);
+  const desired = roundMoney(OPEN_SIZE_BB[chartSeat] * state.bb);
   const to = clampRaise(desired, state.bb * 2, maxTo);
   return {
     action: 'raise',
     chips: to,
     headline: raiseHeadline(to, maxTo, state.bb),
-    explanation: `${name} is in the ${state.hero} opening range. ${raiseSentence(to, maxTo, state.bb)}.`,
+    explanation: `${name} is in the ${seatPhrase(state)} opening range. ${raiseSentence(to, maxTo, state.bb)}.`,
     source,
   };
 }
 
 function limpAdvice(state: HandState, key: string, name: string, limps: number, maxTo: number): PreflopAdvice {
-  const chart = state.hero === 'BB' ? BB_ISO : OPEN_RANGE[state.hero];
+  const chart = state.hero === 'BB' ? BB_ISO : OPEN_RANGE[heroChart(state)];
   const source = `Iso-raise chart · ${limps} limp${limps === 1 ? '' : 's'} · 100bb`;
   const limpWord = limps === 1 ? 'a limp' : `${limps} limps`;
   if (!inRange(key, chart)) {
@@ -114,17 +115,17 @@ function limpAdvice(state: HandState, key: string, name: string, limps: number, 
       action: 'fold',
       chips: null,
       headline: 'Fold',
-      explanation: `${name} is not worth an iso-raise over ${limpWord} from ${state.hero}. Fold.`,
+      explanation: `${name} is not worth an iso-raise over ${limpWord} from ${seatPhrase(state)}. Fold.`,
       source,
     };
   }
-  const desired = roundMoney((Math.max(OPEN_SIZE_BB[state.hero], 3.5) + limps) * state.bb);
+  const desired = roundMoney((Math.max(OPEN_SIZE_BB[heroChart(state)], 3.5) + limps) * state.bb);
   const to = clampRaise(desired, state.bb * 2, maxTo);
   return {
     action: 'raise',
     chips: to,
     headline: raiseHeadline(to, maxTo, state.bb),
-    explanation: `${name} can raise over ${limpWord} from ${state.hero}. ${raiseSentence(to, maxTo, state.bb)}.`,
+    explanation: `${name} can raise over ${limpWord} from ${seatPhrase(state)}. ${raiseSentence(to, maxTo, state.bb)}.`,
     source,
   };
 }
@@ -137,13 +138,14 @@ function versusOpen(
   callers: number,
   maxTo: number,
 ): PreflopAdvice {
-  const source = `Vs-${openerGroup(opener.position)} open · ${state.hero} · 100bb`;
-  const threeBet = threeBetRange(state.hero, opener.position);
-  const flat = callRange(state.hero, opener.position);
+  const openerChart = chartPosition(state.seats, opener.position);
+  const source = `Vs-${openerGroup(openerChart)} open · ${seatPhrase(state)} · 100bb`;
+  const threeBet = threeBetRange(heroChart(state), openerChart);
+  const flat = callRange(heroChart(state), openerChart);
   const who = `${opener.position} open`;
 
   if (inRange(key, threeBet)) {
-    const oop = state.hero === 'SB' || state.hero === 'BB';
+    const oop = heroChart(state) === 'SB' || heroChart(state) === 'BB';
     const multiplier = oop ? 4 : 3;
     const desired = roundMoney(opener.to * multiplier + callers * opener.to);
     const minTo = derive(state).minRaiseTo;
@@ -153,7 +155,7 @@ function versusOpen(
       action: 'raise',
       chips: to,
       headline: raiseHeadline(to, maxTo, state.bb),
-      explanation: `${name} 3-bets a ${who} from ${state.hero}${callerNote}. ${raiseSentence(to, maxTo, state.bb)}.`,
+      explanation: `${name} 3-bets a ${who} from ${seatPhrase(state)}${callerNote}. ${raiseSentence(to, maxTo, state.bb)}.`,
       source,
     };
   }
@@ -165,7 +167,7 @@ function versusOpen(
       action: 'call',
       chips: owed,
       headline: `Call ${chipsAndBb(owed, state.bb)}`,
-      explanation: `${name} flats a ${who} from ${state.hero} in this chart. Call ${chipsAndBb(owed, state.bb)}.`,
+      explanation: `${name} flats a ${who} from ${seatPhrase(state)} in this chart. Call ${chipsAndBb(owed, state.bb)}.`,
       source,
     };
   }
@@ -175,7 +177,7 @@ function versusOpen(
       action: 'fold',
       chips: null,
       headline: 'Fold',
-      explanation: `${name} might flat this open heads-up, but with ${callers} caller${callers === 1 ? '' : 's'} it is a fold from ${state.hero}.`,
+      explanation: `${name} might flat this open heads-up, but with ${callers} caller${callers === 1 ? '' : 's'} it is a fold from ${seatPhrase(state)}.`,
       source,
     };
   }
@@ -184,7 +186,7 @@ function versusOpen(
     action: 'fold',
     chips: null,
     headline: 'Fold',
-    explanation: `${name} is not in the ${state.hero} 3-bet or call range against a ${who}. Fold.`,
+    explanation: `${name} is not in the ${seatPhrase(state)} 3-bet or call range against a ${who}. Fold.`,
     source,
   };
 }
@@ -197,13 +199,14 @@ function versusThreeBet(
   maxTo: number,
 ): PreflopAdvice {
   const heroOpened = raises[0].position === state.hero;
-  const chart = heroOpened ? fourBetRange(state.hero) : coldFourBetRange(state.hero);
-  const source = heroOpened ? `Vs 3-bet · ${state.hero} opened · 100bb` : `Cold vs 3-bet · ${state.hero} · 100bb`;
+  const chart = heroOpened ? fourBetRange(heroChart(state)) : coldFourBetRange(heroChart(state));
+  const source = heroOpened ? `Vs 3-bet · ${seatPhrase(state)} opened · 100bb` : `Cold vs 3-bet · ${seatPhrase(state)} · 100bb`;
   const derived = derive(state);
   const threeBet = raises[1];
 
   if (inRange(key, chart.fourBet)) {
-    const oop = state.hero === 'SB' || state.hero === 'BB' || state.hero === 'UTG';
+    const chartSeat = heroChart(state);
+    const oop = chartSeat === 'SB' || chartSeat === 'BB' || chartSeat === 'UTG';
     const desired = roundMoney(threeBet.to * (oop ? 2.7 : 2.4));
     const jammed = desired >= state.stack * 0.4;
     const to = jammed ? maxTo : clampRaise(desired, derived.minRaiseTo, maxTo);
@@ -230,7 +233,7 @@ function versusThreeBet(
     action: 'fold',
     chips: null,
     headline: 'Fold',
-    explanation: `${name} is not strong enough to continue against ${threeBet.position}'s 3-bet from ${state.hero}. Fold.`,
+    explanation: `${name} is not strong enough to continue against ${threeBet.position}'s 3-bet from ${seatPhrase(state)}. Fold.`,
     source,
   };
 }
@@ -314,6 +317,16 @@ function versusFiveBet(state: HandState, key: string, name: string, maxTo: numbe
     explanation: `${name} folds to a 5-bet. This chart only continues with aces and kings.`,
     source,
   };
+}
+
+function heroChart(state: HandState): Position {
+  return chartPosition(state.seats, state.hero);
+}
+
+/** Seat name, plus the full-ring chart when a short table borrows one. */
+function seatPhrase(state: HandState): string {
+  const chart = heroChart(state);
+  return chart === state.hero ? state.hero : `${state.hero} (${chart} chart)`;
 }
 
 function readSpot(actions: ActionRecord[]): { raises: RaiseEvent[]; limps: number; callers: number } {

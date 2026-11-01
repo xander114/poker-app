@@ -97,6 +97,23 @@ button.ghost:hover, button.deal:hover, button.play:hover { filter: brightness(1.
 .seats div { display: flex; flex-wrap: wrap; gap: 6px; }
 .seat { padding: 7px 10px; text-transform: none; letter-spacing: 0; font-size: 13px; }
 .seat.on { background: var(--ink); color: var(--bg-deep); border-color: transparent; }
+button.seat.on:disabled { opacity: 1; cursor: default; }
+.player-count {
+  min-width: 1.5em;
+  text-align: center;
+  font-size: 16px;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--ink);
+}
+.seat-note {
+  margin: 0;
+  max-width: 46ch;
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 13px;
+  line-height: 1.4;
+}
 button:disabled { opacity: 0.45; cursor: not-allowed; }
 
 .layout { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(300px, 0.78fr); gap: 18px; align-items: start; }

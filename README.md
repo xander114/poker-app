@@ -1,6 +1,6 @@
 # Full Ring Advisor
 
-A browser study tool for **9-handed no-limit hold'em cash games**. You set the blinds, effective stack, and your seat, then walk a hand from preflop to the river. At each decision the app recommends fold, check, call, bet, or raise, and it keeps the pot, the price to call, pot odds, and stack-to-pot ratio up to date.
+A browser study tool for **no-limit hold'em cash games**, from heads-up to a full ring. You set the blinds, effective stack, and table size, pick your seat once, and walk a hand from preflop to the river. Each new hand moves your seat one spot with the button. At each decision the app recommends fold, check, call, bet, or raise, and it keeps the pot, the price to call, pot odds, and stack-to-pot ratio up to date.
 
 It is meant for study, home games, and hand review. It is **not** a poker solver, and most online poker sites forbid real-time assistance software. Don't use it at a real-money online table.
 
@@ -22,11 +22,11 @@ No server and no account are required. Everything runs in the browser.
 
 ## How a hand works
 
-1. Set the small blind, big blind, effective stack (default 100bb), and your seat: UTG, UTG+1, UTG+2, LJ, HJ, CO, BTN, SB, or BB.
+1. Set the small blind, big blind, effective stack (default 100bb), and how many players are sitting (2 through 9). Pick your seat once. A full ring is UTG, UTG+1, UTG+2, LJ, HJ, CO, BTN, SB, BB. Six-handed is UTG, HJ, CO, BTN, SB, BB. Heads-up is BTN and BB, and the button posts the small blind.
 2. Click a hole-card slot. Choose a rank from 2 through ace, then a suit. The picker moves to the next empty slot. Cards already in use are marked and cannot be picked again. The app recommends a preflop action from a full-ring chart, using the action already in front of you (unopened, limped, facing an open, facing a 3-bet, and so on).
 3. Enter every fold, check, call, bet, and raise in order. Use **Folds to you** when the table folds around. **Play this** applies the recommendation for your seat.
 4. When the betting round is closed, deal the flop, turn, and river. Board slots open on the street they belong to, and the picker walks the empty ones. Click a filled slot to change that card. You get a new recommendation on each street, with a one- or two-line reason.
-5. **New hand** clears the cards and history and deals the blinds again. **Undo** takes back the last action. The hand history on the left is only the current hand.
+5. **New hand** clears the cards and history, deals the blinds again, and moves your seat one spot with the button: the button becomes the small blind, the small blind becomes the big blind, and the big blind becomes first to act. Heads-up, the two seats swap. **Change seat** picks a different seat before the hand starts, and **Set next seat** does it for the hand after this one. Dropping or adding a player waits until the next hand if a hand is already underway. **Undo** takes back the last action. The hand history on the left is only the current hand.
 
 ## How recommendations are made
 
@@ -52,6 +52,7 @@ True solver output is not computed in the browser. The advisor is honest about t
 ## Limits
 
 - Charts are a published-style simplification for 100bb nine-handed play, not a licensed solver pack. They ignore mixed strategies, ante games, and short stacks beyond "shove when the chart size is most of your stack."
+- Shorter tables do not have their own charts. A seat uses the full-ring chart the same number of spots off the button, and the blinds keep the blind charts. Six-handed UTG is three off the button, so it uses the lojack chart. Heads-up uses the button and big-blind charts, which are wider or tighter than a real heads-up strategy. The recommendation says when it is borrowing a chart.
 - Postflop play is heads-up-leaning. Multiway pots bet less often and do not bluff, but equity is still against one estimated range.
 - Villain ranges are not narrowed by every street the way a solver would. A bet only removes empty air.
 - Short all-ins still reopen the action.

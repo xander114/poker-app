@@ -3,8 +3,9 @@ import { analyzeHolding } from './engine/analyze';
 import { type Rank, type Suit, startingHandName } from './engine/cards';
 import {
   type Position,
-  POSITIONS,
   boardCardsFor,
+  closestSeat,
+  seatsFor,
   streetLabel,
   type Street,
 } from './engine/constants';
@@ -60,6 +61,9 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const [slots, setSlots] = useState<SlotCards>(() => emptySlots());
   const [picker, setPicker] = useState<PickerSession | null>(null);
+  const [pickingSeat, setPickingSeat] = useState(false);
+  const [pendingPlayers, setPendingPlayers] = useState<number | null>(null);
+  const [pendingHero, setPendingHero] = useState<Position | null>(null);
 
   const derived = useMemo(() => derive(state), [state]);
   const advice = useMemo(() => recommend(state), [state]);
@@ -87,12 +91,16 @@ export function App() {
     }
   }
 
-  function updateTable(partial: Partial<{ sb: number; bb: number; stackBb: number; hero: Position }>) {
+  function updateTable(partial: Partial<{ sb: number; bb: number; stackBb: number; hero: Position; players: number }>) {
+    const players = partial.players ?? state.seats.length;
+    const seats = seatsFor(players);
+    const requested = partial.hero ?? state.hero;
     const config = {
       sb: partial.sb ?? Number(sbText),
       bb: partial.bb ?? Number(bbText),
       stackBb: partial.stackBb ?? Number(stackText),
-      hero: partial.hero ?? state.hero,
+      hero: seats.includes(requested) ? requested : closestSeat(state.seats, requested, seats),
+      players,
     };
     const problem = validateConfig(config);
     if (problem) {
@@ -101,8 +109,34 @@ export function App() {
     }
     if (!pristine) return;
     setError(null);
+    setPendingHero(null);
+    setPendingPlayers(null);
     setState(createHand(config));
   }
+
+  function setPlayerCount(next: number) {
+    if (next < 2 || next > 9) return;
+    if (!pristine) {
+      setPendingPlayers(next === state.seats.length ? null : next);
+      return;
+    }
+    updateTable({ players: next });
+  }
+
+  function chooseSeat(position: Position) {
+    setPickingSeat(false);
+    if (pristine) {
+      updateTable({ hero: position });
+      return;
+    }
+    setPendingHero(position);
+  }
+
+  const following = newHand(state, {
+    ...(pendingHero ? { hero: pendingHero } : {}),
+    ...(pendingPlayers ? { players: pendingPlayers } : {}),
+  });
+  const editedPlayers = pendingPlayers ?? state.seats.length;
 
   function commitSlots(nextSlots: SlotCards): boolean {
     const projected = projectCards(nextSlots, state.street);
@@ -215,7 +249,7 @@ export function App() {
     <div className="app">
       <header className="top">
         <div>
-          <p className="mark">9-handed no-limit hold'em</p>
+          <p className="mark">{state.seats.length}-handed no-limit hold'em</p>
           <h1>Full Ring Advisor</h1>
           <p className="lede">Xander's study table for cash-game decisions, from the first open through the river.</p>
         </div>
@@ -223,10 +257,13 @@ export function App() {
           type="button"
           className="ghost"
           onClick={() => {
-            replace(newHand(state));
+            replace(following);
             setSlots(emptySlots());
             setPicker(null);
             setAmount('');
+            setPickingSeat(false);
+            setPendingHero(null);
+            setPendingPlayers(null);
           }}
         >
           New hand
@@ -277,20 +314,43 @@ export function App() {
           </span>
         </label>
         <div className="seats">
-          <span>Your seat</span>
+          <span>Players</span>
           <div>
-            {POSITIONS.map((position) => (
+            <button type="button" className="seat" disabled={editedPlayers <= 2} onClick={() => setPlayerCount(editedPlayers - 1)}>
+              −
+            </button>
+            <strong className="player-count" data-testid="player-count">{editedPlayers}</strong>
+            <button type="button" className="seat" disabled={editedPlayers >= 9} onClick={() => setPlayerCount(editedPlayers + 1)}>
+              +
+            </button>
+          </div>
+        </div>
+        <div className="seats">
+          <span>Your seat</span>
+          <div role="group" aria-label={pickingSeat ? 'Choose your seat' : 'Your seat'}>
+            {state.seats.map((position) => (
               <button
                 key={position}
                 type="button"
                 className={position === state.hero ? 'seat on' : 'seat'}
-                disabled={!pristine}
-                onClick={() => updateTable({ hero: position })}
+                disabled={!pickingSeat}
+                aria-pressed={position === state.hero}
+                onClick={() => chooseSeat(position)}
               >
                 {position}
               </button>
             ))}
+            <button type="button" className="seat" onClick={() => setPickingSeat((open) => !open)}>
+              {pickingSeat ? 'Cancel' : pristine ? 'Change seat' : 'Set next seat'}
+            </button>
           </div>
+          <p className="seat-note">
+            {pendingHero
+              ? `Next hand you play ${following.hero}.`
+              : `Each new hand you move one spot, to ${following.hero}.`}
+            {pendingPlayers ? ` ${pendingPlayers} players starting next hand.` : ''}
+            {!pendingPlayers && state.seats.length < 9 ? ' Short-handed seats use the closest full-ring chart.' : ''}
+          </p>
         </div>
       </section>
 
