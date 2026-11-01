@@ -24,6 +24,7 @@ import {
   newHand,
   setBoard,
   setHole,
+  streetChoices,
   undo,
   validateConfig,
 } from './engine/hand';
@@ -40,12 +41,11 @@ import {
   emptySlotLabel,
   emptySlots,
   firstEmptyBoardSlot,
-  isSlotAllowed,
   openPicker,
   pickRank,
   pickSuit,
   projectCards,
-  slotLockReason,
+  revealedStreet,
   slotsAfterUndo,
   takenCards,
 } from './ui/cardPicker';
@@ -86,7 +86,7 @@ export function App() {
     const result = applyAction(state, input);
     if (!result.ok) setError(result.error);
     else {
-      replace(result.state);
+      replace(publishBoard(result.state, slots));
       setAmount('');
     }
   }
@@ -138,6 +138,19 @@ export function App() {
   });
   const editedPlayers = pendingPlayers ?? state.seats.length;
 
+  function publishBoard(hand: HandState, nextSlots: SlotCards): HandState {
+    const projected = projectCards(nextSlots, hand.street);
+    const boarded = setBoard(hand, projected.board);
+    if (!boarded.ok) return hand;
+    const view = derive(boarded.state);
+    const street = revealedStreet(nextSlots, boarded.state.street, !view.toAct && !view.winner);
+    if (street === boarded.state.street) return boarded.state;
+    const advanced = advanceStreet(boarded.state);
+    if (!advanced.ok) return boarded.state;
+    const later = setBoard(advanced.state, projectCards(nextSlots, advanced.state.street).board);
+    return later.ok ? later.state : advanced.state;
+  }
+
   function commitSlots(nextSlots: SlotCards): boolean {
     const projected = projectCards(nextSlots, state.street);
     const holeResult = setHole(state, projected.hole);
@@ -145,18 +158,12 @@ export function App() {
       setError(holeResult.error);
       return false;
     }
-    const boardResult = setBoard(holeResult.state, projected.board);
-    if (!boardResult.ok) {
-      setError(boardResult.error);
-      return false;
-    }
-    replace(boardResult.state);
+    replace(publishBoard(holeResult.state, nextSlots));
     setSlots(nextSlots);
     return true;
   }
 
   function openSlot(slot: SlotId) {
-    if (!isSlotAllowed(state.street, slot)) return;
     setPicker(openPicker(slot));
   }
 
@@ -168,14 +175,14 @@ export function App() {
 
   function chooseSuit(suit: Suit) {
     if (!picker) return;
-    const placed = pickSuit(picker, suit, slots, state.street);
+    const placed = pickSuit(picker, suit, slots);
     if (!placed || !commitSlots(placed.slots)) return;
     setPicker(placed.session);
   }
 
   function goBack() {
     if (!picker) return;
-    setPicker(backPicker(picker, state.street));
+    setPicker(backPicker(picker));
   }
 
   function clearPickedSlot() {
@@ -199,9 +206,16 @@ export function App() {
   const actorOwed = actor ? amountToCall(state, actor) : 0;
   const actorCommit = actor ? derived.streetCommit[actor] : 0;
   const canAct = Boolean(actor) && !derived.winner;
-  const facingBet = derived.currentBet > 0;
-  const canRaise = Boolean(actor) && facingBet && actorMax > derived.currentBet && actorOwed < actorMax - actorCommit;
-  const canBet = Boolean(actor) && !facingBet && actorMax >= state.bb;
+  const choices = streetChoices({
+    owed: actorOwed,
+    currentBet: derived.currentBet,
+    actorMax,
+    actorCommit,
+    minimumBet: state.bb,
+  });
+  const canRaise = Boolean(actor) && choices.raise;
+  const canBet = Boolean(actor) && choices.bet;
+  const raising = derived.currentBet > 0;
 
   const betPresets = canBet
     ? uniqueSizes(
@@ -230,7 +244,7 @@ export function App() {
 
   function submitSized(to: number) {
     if (!actor) return;
-    apply({ position: actor, kind: facingBet ? 'raise' : 'bet', to });
+    apply({ position: actor, kind: raising ? 'raise' : 'bet', to });
   }
 
   function submitCustom() {
@@ -395,7 +409,9 @@ export function App() {
           <section className="panel">
             <div className="panel-head">
               <h2>Board</h2>
-              <p>{visibleBoard.length === 0 ? 'No community cards yet' : advice.texture ?? 'Community cards'}</p>
+              <p>
+                {BOARD_SLOTS.some((slot) => slots[slot]) ? (advice.texture ?? 'Community cards') : 'No community cards yet'}
+              </p>
             </div>
             <div className="held board-row">
               {BOARD_SLOTS.map((slot) => (
@@ -405,8 +421,6 @@ export function App() {
                   label={emptySlotLabel(slot)}
                   card={slots[slot]}
                   active={picker?.slot === slot}
-                  disabled={!isSlotAllowed(state.street, slot)}
-                  lockReason={slotLockReason(state.street, slot)}
                   onClick={() => openSlot(slot)}
                 />
               ))}
@@ -445,12 +459,12 @@ export function App() {
                   <button type="button" onClick={() => apply({ position: actor, kind: 'fold' })}>
                     Fold
                   </button>
-                  {!facingBet && (
+                  {choices.check && (
                     <button type="button" className="quiet" onClick={() => apply({ position: actor, kind: 'check' })}>
                       Check
                     </button>
                   )}
-                  {facingBet && (
+                  {choices.call && (
                     <button type="button" className="call" onClick={() => apply({ position: actor, kind: 'call' })}>
                       Call {formatChips(actorOwed)}
                     </button>
@@ -458,7 +472,7 @@ export function App() {
                 </>
               )}
               {actor && actor !== state.hero && (
-                <button type="button" className="quiet" onClick={() => replace(foldToHero(state))}>
+                <button type="button" className="quiet" onClick={() => replace(publishBoard(foldToHero(state), slots))}>
                   Folds to you
                 </button>
               )}
@@ -482,8 +496,11 @@ export function App() {
                     const result = advanceStreet(state);
                     if (!result.ok) setError(result.error);
                     else {
-                      replace(result.state);
-                      const nextSlot = firstEmptyBoardSlot(result.state.street, slots);
+                      const projected = projectCards(slots, result.state.street);
+                      const boarded = setBoard(result.state, projected.board);
+                      const next = boarded.ok ? boarded.state : result.state;
+                      replace(next);
+                      const nextSlot = firstEmptyBoardSlot(next.street, slots);
                       setPicker(nextSlot ? openPicker(nextSlot) : null);
                     }
                   }}
@@ -495,9 +512,9 @@ export function App() {
             {(canBet || canRaise) && actor && (
               <div className="sizer">
                 <div className="presets">
-                  {(facingBet ? raisePresets : betPresets).map((preset) => (
+                  {(raising ? raisePresets : betPresets).map((preset) => (
                     <button key={preset.label} type="button" className="chip" onClick={() => submitSized(preset.to)}>
-                      {facingBet ? 'Raise' : 'Bet'} {formatChips(preset.to)}
+                      {raising ? 'Raise' : 'Bet'} {formatChips(preset.to)}
                       <small>{preset.label}</small>
                     </button>
                   ))}
@@ -509,11 +526,11 @@ export function App() {
                   }}
                 >
                   <label>
-                    {facingBet ? 'Raise to' : 'Bet'}
+                    {raising ? 'Raise to' : 'Bet'}
                     <input
                       inputMode="decimal"
                       value={amount}
-                      placeholder={facingBet ? String(derived.minRaiseTo) : String(state.bb)}
+                      placeholder={raising ? String(derived.minRaiseTo) : String(state.bb)}
                       onChange={(event) => setAmount(event.target.value)}
                     />
                   </label>

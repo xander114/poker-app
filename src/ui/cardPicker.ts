@@ -77,19 +77,6 @@ export function slotHeading(slot: SlotId): string {
   return 'River';
 }
 
-export function isSlotAllowed(street: Street, slot: SlotId): boolean {
-  if (slot === 'hole-0' || slot === 'hole-1') return true;
-  const index = BOARD_SLOTS.indexOf(slot as (typeof BOARD_SLOTS)[number]);
-  return index >= 0 && index < boardCardsFor(street);
-}
-
-export function slotLockReason(street: Street, slot: SlotId): string | null {
-  if (isSlotAllowed(street, slot)) return null;
-  if (slot === 'turn') return 'Deal the turn to choose this card';
-  if (slot === 'river') return 'Deal the river to choose this card';
-  return 'Deal the flop to choose this card';
-}
-
 export function takenCards(slots: SlotCards, except?: SlotId): Card[] {
   const cards: Card[] = [];
   for (const id of SLOT_ORDER) {
@@ -120,36 +107,50 @@ export function pickRank(session: PickerSession, rank: Rank, slots: SlotCards): 
 }
 
 /**
- * Writes the card into the slot and moves to the next empty slot the street allows.
+ * Writes the card into the slot and moves to the next empty slot in the same group.
+ * Hole cards stay on the hole cards. Board cards run flop, turn, river even before that street is dealt.
  * Returns null when that exact card is already used somewhere else.
  */
 export function pickSuit(
   session: PickerSession,
   suit: Suit,
   slots: SlotCards,
-  street: Street,
 ): { slots: SlotCards; session: PickerSession | null } | null {
   if (session.step !== 'suit' || !session.rank) return null;
   if (suitBlocked(session.rank, suit, takenCards(slots, session.slot))) return null;
   const nextSlots: SlotCards = { ...slots, [session.slot]: { rank: session.rank, suit } };
-  return { slots: nextSlots, session: advanceAfterPick(session, street, nextSlots) };
+  return { slots: nextSlots, session: advanceAfterPick(session, nextSlots) };
 }
 
 /** Suit step returns to ranks. Rank step returns to the previous slot, or closes on the slot that was opened. */
-export function back(session: PickerSession, street: Street): PickerSession | null {
+export function back(session: PickerSession): PickerSession | null {
   if (session.step === 'suit') return { ...session, step: 'rank', rank: null };
   if (session.slot === session.origin) return null;
-  const prev = previousAllowedSlot(session.slot, street);
+  const prev = previousInGroup(session.slot);
   if (!prev || slotIndex(prev) < slotIndex(session.origin)) return null;
   return { slot: prev, step: 'rank', rank: null, origin: session.origin };
 }
 
+/** First empty board slot the street can use. Later streets stay out of the deal prompt. */
 export function firstEmptyBoardSlot(street: Street, slots: SlotCards): SlotId | null {
-  for (const id of BOARD_SLOTS) {
-    if (!isSlotAllowed(street, id)) continue;
+  const limit = boardCardsFor(street);
+  for (let index = 0; index < limit; index++) {
+    const id = BOARD_SLOTS[index];
     if (!slots[id]) return id;
   }
   return null;
+}
+
+/**
+ * When betting is closed and the next street's cards are already chosen, that street is ready to view.
+ * Cards past that street wait, so a filled river does not skip the flop.
+ */
+export function revealedStreet(slots: SlotCards, street: Street, bettingClosed: boolean): Street {
+  if (!bettingClosed) return street;
+  const upcoming = street === 'preflop' ? 'flop' : street === 'flop' ? 'turn' : street === 'turn' ? 'river' : null;
+  if (!upcoming) return street;
+  const ready = projectCards(slots, upcoming).board.length >= boardCardsFor(upcoming);
+  return ready ? upcoming : street;
 }
 
 /**
@@ -175,6 +176,7 @@ export function slotsAfterUndo(before: UndoSnap, after: UndoSnap, slots: SlotCar
     before.actions.length === after.actions.length &&
     before.street === after.street;
   if (clearedCards) return emptySlots();
+  if (boardCardsFor(after.street) >= boardCardsFor(before.street)) return { ...slots };
   const limit = boardCardsFor(after.street);
   const next: SlotCards = { ...slots };
   BOARD_SLOTS.forEach((id, index) => {
@@ -183,27 +185,34 @@ export function slotsAfterUndo(before: UndoSnap, after: UndoSnap, slots: SlotCar
   return next;
 }
 
-function advanceAfterPick(session: PickerSession, street: Street, slots: SlotCards): PickerSession | null {
-  const next = nextEmptyAllowedSlot(session.slot, street, slots);
+function advanceAfterPick(session: PickerSession, slots: SlotCards): PickerSession | null {
+  const next = nextEmptyInGroup(session.slot, slots);
   if (!next) return null;
   return { slot: next, step: 'rank', rank: null, origin: session.origin };
 }
 
-function nextEmptyAllowedSlot(from: SlotId, street: Street, slots: SlotCards): SlotId | null {
+function nextEmptyInGroup(from: SlotId, slots: SlotCards): SlotId | null {
+  const hole = isHole(from);
   for (let index = slotIndex(from) + 1; index < SLOT_ORDER.length; index++) {
     const id = SLOT_ORDER[index];
-    if (!isSlotAllowed(street, id) || slots[id]) continue;
+    if (isHole(id) !== hole) break;
+    if (!slots[id]) return id;
+  }
+  return null;
+}
+
+function previousInGroup(from: SlotId): SlotId | null {
+  const hole = isHole(from);
+  for (let index = slotIndex(from) - 1; index >= 0; index--) {
+    const id = SLOT_ORDER[index];
+    if (isHole(id) !== hole) return null;
     return id;
   }
   return null;
 }
 
-function previousAllowedSlot(from: SlotId, street: Street): SlotId | null {
-  for (let index = slotIndex(from) - 1; index >= 0; index--) {
-    const id = SLOT_ORDER[index];
-    if (isSlotAllowed(street, id)) return id;
-  }
-  return null;
+function isHole(slot: SlotId): boolean {
+  return slot === 'hole-0' || slot === 'hole-1';
 }
 
 function slotIndex(slot: SlotId): number {

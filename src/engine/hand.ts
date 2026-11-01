@@ -263,6 +263,31 @@ function findToAct(
   return null;
 }
 
+export interface StreetChoices {
+  check: boolean;
+  call: boolean;
+  raise: boolean;
+  bet: boolean;
+}
+
+/** Check when nothing is owed. Call only when chips are owed. A live bet is raised, including the big blind's option. */
+export function streetChoices(input: {
+  owed: number;
+  currentBet: number;
+  actorMax: number;
+  actorCommit: number;
+  minimumBet: number;
+}): StreetChoices {
+  const owes = input.owed > 0;
+  const liveBet = input.currentBet > 0;
+  return {
+    check: !owes,
+    call: owes,
+    raise: liveBet && input.actorMax > input.currentBet && input.owed < input.actorMax - input.actorCommit,
+    bet: !liveBet && input.actorMax >= input.minimumBet,
+  };
+}
+
 export function amountToCall(state: HandState, position: Position, derived: Derived = derive(state)): number {
   const remaining = Math.max(0, state.stack - derived.totalCommit[position]);
   return roundMoney(Math.min(Math.max(0, derived.currentBet - derived.streetCommit[position]), remaining));
