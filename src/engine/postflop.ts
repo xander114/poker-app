@@ -1,6 +1,6 @@
 import { analyzeHolding, boardTexture, capitalizedHolding, texturePhrase, type HandRead, type Texture } from './analyze';
 import { type Card } from './cards';
-import type { Position, Street } from './constants';
+import { chartPosition, type Position, type Street } from './constants';
 import { type WeightedCombo, equityVsRange, seedFrom, type EquityResult } from './equity';
 import { type HandState, derive, type Derived } from './hand';
 import { EPS, chipsAndBb, percent, potOdds, roundMoney, roundToChips } from './pot';
@@ -289,18 +289,21 @@ export function inferVillainRange(state: HandState): VillainRange {
     if (raises.length >= 3 && raises[raises.length - 1].position === position) {
       expr = 'QQ+,AKs,AKo';
       label = `${position}'s 4-bet range`;
-    } else if (raises.length >= 2 && raises[1].position === position) {
+    } else     if (raises.length >= 2 && raises[1].position === position) {
       const opener = raises[0].position;
-      expr = threeBetRange(position, opener);
-      label = `${position}'s 3-bet range against ${openerGroup(opener)}`;
+      expr = threeBetRange(chartPosition(state.seats, position), chartPosition(state.seats, opener));
+      label = `${position}'s 3-bet range against ${openerGroup(chartPosition(state.seats, opener))}`;
     } else {
-      expr = OPEN_RANGE[position] || '22+,A2s+,A9o+,KTs+,KJo+,QTs+,JTs';
+      expr = OPEN_RANGE[chartPosition(state.seats, position)] || '22+,A2s+,A9o+,KTs+,KJo+,QTs+,JTs';
       label = `${position}'s opening range`;
     }
   } else if (position) {
     const opener = raises[0]?.position;
     if (opener && opener !== position) {
-      expr = callRange(position, opener) || OPEN_RANGE[position] || '22+,A9s+,KTs+,QTs+,JTs,T9s,98s,AJo+,KQo';
+      expr =
+        callRange(chartPosition(state.seats, position), chartPosition(state.seats, opener)) ||
+        OPEN_RANGE[chartPosition(state.seats, position)] ||
+        '22+,A9s+,KTs+,QTs+,JTs,T9s,98s,AJo+,KQo';
       label = `${position}'s calling range`;
     } else {
       expr = '22+,A2s+,K9s+,Q9s+,J9s+,T8s+,97s+,86s+,A9o+,KTo+,QTo+,JTo';

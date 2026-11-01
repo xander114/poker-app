@@ -3,8 +3,9 @@ import { analyzeHolding } from './engine/analyze';
 import { type Rank, type Suit, startingHandName } from './engine/cards';
 import {
   type Position,
-  POSITIONS,
   boardCardsFor,
+  closestSeat,
+  seatsFor,
   streetLabel,
   type Street,
 } from './engine/constants';
@@ -23,6 +24,7 @@ import {
   newHand,
   setBoard,
   setHole,
+  streetChoices,
   undo,
   validateConfig,
 } from './engine/hand';
@@ -39,12 +41,11 @@ import {
   emptySlotLabel,
   emptySlots,
   firstEmptyBoardSlot,
-  isSlotAllowed,
   openPicker,
   pickRank,
   pickSuit,
   projectCards,
-  slotLockReason,
+  revealedStreet,
   slotsAfterUndo,
   takenCards,
 } from './ui/cardPicker';
@@ -60,6 +61,9 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const [slots, setSlots] = useState<SlotCards>(() => emptySlots());
   const [picker, setPicker] = useState<PickerSession | null>(null);
+  const [pickingSeat, setPickingSeat] = useState(false);
+  const [pendingPlayers, setPendingPlayers] = useState<number | null>(null);
+  const [pendingHero, setPendingHero] = useState<Position | null>(null);
 
   const derived = useMemo(() => derive(state), [state]);
   const advice = useMemo(() => recommend(state), [state]);
@@ -82,17 +86,21 @@ export function App() {
     const result = applyAction(state, input);
     if (!result.ok) setError(result.error);
     else {
-      replace(result.state);
+      replace(publishBoard(result.state, slots));
       setAmount('');
     }
   }
 
-  function updateTable(partial: Partial<{ sb: number; bb: number; stackBb: number; hero: Position }>) {
+  function updateTable(partial: Partial<{ sb: number; bb: number; stackBb: number; hero: Position; players: number }>) {
+    const players = partial.players ?? state.seats.length;
+    const seats = seatsFor(players);
+    const requested = partial.hero ?? state.hero;
     const config = {
       sb: partial.sb ?? Number(sbText),
       bb: partial.bb ?? Number(bbText),
       stackBb: partial.stackBb ?? Number(stackText),
-      hero: partial.hero ?? state.hero,
+      hero: seats.includes(requested) ? requested : closestSeat(state.seats, requested, seats),
+      players,
     };
     const problem = validateConfig(config);
     if (problem) {
@@ -101,7 +109,46 @@ export function App() {
     }
     if (!pristine) return;
     setError(null);
+    setPendingHero(null);
+    setPendingPlayers(null);
     setState(createHand(config));
+  }
+
+  function setPlayerCount(next: number) {
+    if (next < 2 || next > 9) return;
+    if (!pristine) {
+      setPendingPlayers(next === state.seats.length ? null : next);
+      return;
+    }
+    updateTable({ players: next });
+  }
+
+  function chooseSeat(position: Position) {
+    setPickingSeat(false);
+    if (pristine) {
+      updateTable({ hero: position });
+      return;
+    }
+    setPendingHero(position);
+  }
+
+  const following = newHand(state, {
+    ...(pendingHero ? { hero: pendingHero } : {}),
+    ...(pendingPlayers ? { players: pendingPlayers } : {}),
+  });
+  const editedPlayers = pendingPlayers ?? state.seats.length;
+
+  function publishBoard(hand: HandState, nextSlots: SlotCards): HandState {
+    const projected = projectCards(nextSlots, hand.street);
+    const boarded = setBoard(hand, projected.board);
+    if (!boarded.ok) return hand;
+    const view = derive(boarded.state);
+    const street = revealedStreet(nextSlots, boarded.state.street, !view.toAct && !view.winner);
+    if (street === boarded.state.street) return boarded.state;
+    const advanced = advanceStreet(boarded.state);
+    if (!advanced.ok) return boarded.state;
+    const later = setBoard(advanced.state, projectCards(nextSlots, advanced.state.street).board);
+    return later.ok ? later.state : advanced.state;
   }
 
   function commitSlots(nextSlots: SlotCards): boolean {
@@ -111,18 +158,12 @@ export function App() {
       setError(holeResult.error);
       return false;
     }
-    const boardResult = setBoard(holeResult.state, projected.board);
-    if (!boardResult.ok) {
-      setError(boardResult.error);
-      return false;
-    }
-    replace(boardResult.state);
+    replace(publishBoard(holeResult.state, nextSlots));
     setSlots(nextSlots);
     return true;
   }
 
   function openSlot(slot: SlotId) {
-    if (!isSlotAllowed(state.street, slot)) return;
     setPicker(openPicker(slot));
   }
 
@@ -134,14 +175,14 @@ export function App() {
 
   function chooseSuit(suit: Suit) {
     if (!picker) return;
-    const placed = pickSuit(picker, suit, slots, state.street);
+    const placed = pickSuit(picker, suit, slots);
     if (!placed || !commitSlots(placed.slots)) return;
     setPicker(placed.session);
   }
 
   function goBack() {
     if (!picker) return;
-    setPicker(backPicker(picker, state.street));
+    setPicker(backPicker(picker));
   }
 
   function clearPickedSlot() {
@@ -165,9 +206,16 @@ export function App() {
   const actorOwed = actor ? amountToCall(state, actor) : 0;
   const actorCommit = actor ? derived.streetCommit[actor] : 0;
   const canAct = Boolean(actor) && !derived.winner;
-  const facingBet = derived.currentBet > 0;
-  const canRaise = Boolean(actor) && facingBet && actorMax > derived.currentBet && actorOwed < actorMax - actorCommit;
-  const canBet = Boolean(actor) && !facingBet && actorMax >= state.bb;
+  const choices = streetChoices({
+    owed: actorOwed,
+    currentBet: derived.currentBet,
+    actorMax,
+    actorCommit,
+    minimumBet: state.bb,
+  });
+  const canRaise = Boolean(actor) && choices.raise;
+  const canBet = Boolean(actor) && choices.bet;
+  const raising = derived.currentBet > 0;
 
   const betPresets = canBet
     ? uniqueSizes(
@@ -196,7 +244,7 @@ export function App() {
 
   function submitSized(to: number) {
     if (!actor) return;
-    apply({ position: actor, kind: facingBet ? 'raise' : 'bet', to });
+    apply({ position: actor, kind: raising ? 'raise' : 'bet', to });
   }
 
   function submitCustom() {
@@ -215,7 +263,7 @@ export function App() {
     <div className="app">
       <header className="top">
         <div>
-          <p className="mark">9-handed no-limit hold'em</p>
+          <p className="mark">{state.seats.length}-handed no-limit hold'em</p>
           <h1>Full Ring Advisor</h1>
           <p className="lede">Xander's study table for cash-game decisions, from the first open through the river.</p>
         </div>
@@ -223,10 +271,13 @@ export function App() {
           type="button"
           className="ghost"
           onClick={() => {
-            replace(newHand(state));
+            replace(following);
             setSlots(emptySlots());
             setPicker(null);
             setAmount('');
+            setPickingSeat(false);
+            setPendingHero(null);
+            setPendingPlayers(null);
           }}
         >
           New hand
@@ -277,20 +328,43 @@ export function App() {
           </span>
         </label>
         <div className="seats">
-          <span>Your seat</span>
+          <span>Players</span>
           <div>
-            {POSITIONS.map((position) => (
+            <button type="button" className="seat" disabled={editedPlayers <= 2} onClick={() => setPlayerCount(editedPlayers - 1)}>
+              −
+            </button>
+            <strong className="player-count" data-testid="player-count">{editedPlayers}</strong>
+            <button type="button" className="seat" disabled={editedPlayers >= 9} onClick={() => setPlayerCount(editedPlayers + 1)}>
+              +
+            </button>
+          </div>
+        </div>
+        <div className="seats">
+          <span>Your seat</span>
+          <div role="group" aria-label={pickingSeat ? 'Choose your seat' : 'Your seat'}>
+            {state.seats.map((position) => (
               <button
                 key={position}
                 type="button"
                 className={position === state.hero ? 'seat on' : 'seat'}
-                disabled={!pristine}
-                onClick={() => updateTable({ hero: position })}
+                disabled={!pickingSeat}
+                aria-pressed={position === state.hero}
+                onClick={() => chooseSeat(position)}
               >
                 {position}
               </button>
             ))}
+            <button type="button" className="seat" onClick={() => setPickingSeat((open) => !open)}>
+              {pickingSeat ? 'Cancel' : pristine ? 'Change seat' : 'Set next seat'}
+            </button>
           </div>
+          <p className="seat-note">
+            {pendingHero
+              ? `Next hand you play ${following.hero}.`
+              : `Each new hand you move one spot, to ${following.hero}.`}
+            {pendingPlayers ? ` ${pendingPlayers} players starting next hand.` : ''}
+            {!pendingPlayers && state.seats.length < 9 ? ' Short-handed seats use the closest full-ring chart.' : ''}
+          </p>
         </div>
       </section>
 
@@ -335,7 +409,9 @@ export function App() {
           <section className="panel">
             <div className="panel-head">
               <h2>Board</h2>
-              <p>{visibleBoard.length === 0 ? 'No community cards yet' : advice.texture ?? 'Community cards'}</p>
+              <p>
+                {BOARD_SLOTS.some((slot) => slots[slot]) ? (advice.texture ?? 'Community cards') : 'No community cards yet'}
+              </p>
             </div>
             <div className="held board-row">
               {BOARD_SLOTS.map((slot) => (
@@ -345,8 +421,6 @@ export function App() {
                   label={emptySlotLabel(slot)}
                   card={slots[slot]}
                   active={picker?.slot === slot}
-                  disabled={!isSlotAllowed(state.street, slot)}
-                  lockReason={slotLockReason(state.street, slot)}
                   onClick={() => openSlot(slot)}
                 />
               ))}
@@ -385,12 +459,12 @@ export function App() {
                   <button type="button" onClick={() => apply({ position: actor, kind: 'fold' })}>
                     Fold
                   </button>
-                  {!facingBet && (
+                  {choices.check && (
                     <button type="button" className="quiet" onClick={() => apply({ position: actor, kind: 'check' })}>
                       Check
                     </button>
                   )}
-                  {facingBet && (
+                  {choices.call && (
                     <button type="button" className="call" onClick={() => apply({ position: actor, kind: 'call' })}>
                       Call {formatChips(actorOwed)}
                     </button>
@@ -398,7 +472,7 @@ export function App() {
                 </>
               )}
               {actor && actor !== state.hero && (
-                <button type="button" className="quiet" onClick={() => replace(foldToHero(state))}>
+                <button type="button" className="quiet" onClick={() => replace(publishBoard(foldToHero(state), slots))}>
                   Folds to you
                 </button>
               )}
@@ -422,8 +496,11 @@ export function App() {
                     const result = advanceStreet(state);
                     if (!result.ok) setError(result.error);
                     else {
-                      replace(result.state);
-                      const nextSlot = firstEmptyBoardSlot(result.state.street, slots);
+                      const projected = projectCards(slots, result.state.street);
+                      const boarded = setBoard(result.state, projected.board);
+                      const next = boarded.ok ? boarded.state : result.state;
+                      replace(next);
+                      const nextSlot = firstEmptyBoardSlot(next.street, slots);
                       setPicker(nextSlot ? openPicker(nextSlot) : null);
                     }
                   }}
@@ -435,9 +512,9 @@ export function App() {
             {(canBet || canRaise) && actor && (
               <div className="sizer">
                 <div className="presets">
-                  {(facingBet ? raisePresets : betPresets).map((preset) => (
+                  {(raising ? raisePresets : betPresets).map((preset) => (
                     <button key={preset.label} type="button" className="chip" onClick={() => submitSized(preset.to)}>
-                      {facingBet ? 'Raise' : 'Bet'} {formatChips(preset.to)}
+                      {raising ? 'Raise' : 'Bet'} {formatChips(preset.to)}
                       <small>{preset.label}</small>
                     </button>
                   ))}
@@ -449,11 +526,11 @@ export function App() {
                   }}
                 >
                   <label>
-                    {facingBet ? 'Raise to' : 'Bet'}
+                    {raising ? 'Raise to' : 'Bet'}
                     <input
                       inputMode="decimal"
                       value={amount}
-                      placeholder={facingBet ? String(derived.minRaiseTo) : String(state.bb)}
+                      placeholder={raising ? String(derived.minRaiseTo) : String(state.bb)}
                       onChange={(event) => setAmount(event.target.value)}
                     />
                   </label>

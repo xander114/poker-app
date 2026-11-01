@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { cardsFrom } from './cards';
 import type { Position } from './constants';
-import { type HandState, applyAction, createHand, derive, foldToHero, setHole } from './hand';
+import { type HandState, amountToCall, applyAction, createHand, derive, foldToHero, maxStreetCommit, setHole, streetChoices } from './hand';
 import { formatSpr, potOdds, spr } from './pot';
 
 function must<T extends { ok: true; state: HandState } | { ok: false; error: string }>(result: T): HandState {
@@ -55,6 +55,29 @@ describe('pot and odds', () => {
     expect(view.currentBet).toBe(0);
     expect(view.toAct).toBe('BB');
     expect(view.pot).toBe(13);
+  });
+
+  it('offers the big blind a check and a raise when the table limps', () => {
+    let state = createHand({ sb: 1, bb: 2, stackBb: 100, hero: 'BB' });
+    for (const position of ['UTG', 'UTG+1', 'UTG+2', 'LJ', 'HJ', 'CO', 'BTN', 'SB'] as const) {
+      state = must(applyAction(state, { position, kind: 'call' }));
+    }
+    const view = derive(state);
+    expect(view.toAct).toBe('BB');
+    expect(view.currentBet).toBe(2);
+    expect(amountToCall(state, 'BB')).toBe(0);
+    expect(
+      streetChoices({
+        owed: amountToCall(state, 'BB'),
+        currentBet: view.currentBet,
+        actorMax: maxStreetCommit(state, 'BB'),
+        actorCommit: view.streetCommit.BB,
+        minimumBet: state.bb,
+      }),
+    ).toEqual({ check: true, call: false, raise: true, bet: false });
+    expect(applyAction(state, { position: 'BB', kind: 'call' }).ok).toBe(false);
+    expect(applyAction(state, { position: 'BB', kind: 'check' }).ok).toBe(true);
+    expect(applyAction(state, { position: 'BB', kind: 'raise', to: view.minRaiseTo }).ok).toBe(true);
   });
 
   it('rejects a check when facing a bet and a short raise', () => {
